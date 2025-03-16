@@ -21,9 +21,15 @@ if uploaded_files:
             df["Source_File"] = file.name  # Track which file the data came from
             sheet_data[sheet].append(df)
 
-    # Step 3: Allow user to select sheets to merge
+    # Default sheets to be pre-selected if they exist
+    default_selected_sheets = {"CLEAN TRAD", "Authors", "Top Stories", "Clean Social"}
+
+    # Step 3: Multiselect for choosing sheets (pre-select the default ones if they exist)
+    all_sheets = list(sheet_data.keys())
+    preselected_sheets = [sheet for sheet in all_sheets if sheet in default_selected_sheets]
+
     selected_sheets = st.multiselect(
-        "Select sheets to merge:", options=list(sheet_data.keys()), default=list(sheet_data.keys())
+        "Select sheets to merge:", options=all_sheets, default=preselected_sheets
     )
 
     # Step 4: Show previews in tabs (Only merge on-demand)
