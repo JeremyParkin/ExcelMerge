@@ -414,7 +414,7 @@ if uploaded_files:
                 )
                 st.write(merged_sheets[compiled_sheet].head(10))
 
-    if selected_compiled_sheets and merged_sheets and st.button("Merge & Download"):
+    if selected_compiled_sheets and merged_sheets:
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             for sheet_name, df in merged_sheets.items():
@@ -422,7 +422,7 @@ if uploaded_files:
         output.seek(0)
 
         st.download_button(
-            label="Download Merged Excel File",
+            label="Compile & Download Excel File",
             data=output,
             file_name="merged_workbooks.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
