@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.venv/
+.streamlit/
+.DS_Store
+*.xlsx
+!fixtures/**/*.xlsx
