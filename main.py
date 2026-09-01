@@ -1,124 +1,131 @@
 import io
-import re
-import unicodedata
 
 import pandas as pd
 import streamlit as st
 
+from merger import (
+    EXCEL_SHEET_NAME_LIMIT,
+    MAX_COMPILED_SHEETS,
+    get_suggested_column_group,
+    get_suggested_sheet_groups,
+    merge_dataframes,
+    parse_workbook,
+    resolve_mapping,
+    validate_compiled_sheet_names,
+)
 
-MAX_COMPILED_SHEETS = 5
 
-BILINGUAL_COLUMN_HINTS = {
-    "titre": "Title",
-    "title": "Title",
-    "auteur": "Author",
-    "author": "Author",
-    "date": "Date",
-    "date de publication": "Publication Date",
-    "publication date": "Publication Date",
-    "nom": "Name",
-    "name": "Name",
-    "description": "Description",
-    "resume": "Summary",
-    "summary": "Summary",
-    "url": "URL",
-    "lien": "URL",
-    "source": "Source",
-    "langue": "Language",
-    "language": "Language",
-    "categorie": "Category",
-    "category": "Category",
-    "mots cles": "Keywords",
-    "keywords": "Keywords",
-    "id": "ID",
-}
+cached_parse_workbook = st.cache_data(show_spinner=False)(parse_workbook)
+
 
 st.title("Multi-Sheet Excel Merger")
-
-
-def normalize_text(value: str) -> str:
-    value = str(value).strip().lower()
-    value = unicodedata.normalize("NFKD", value)
-    value = "".join(char for char in value if not unicodedata.combining(char))
-    value = re.sub(r"[^a-z0-9]+", " ", value)
-    return re.sub(r"\s+", " ", value).strip()
-
-
-def get_suggested_column_group(column_name: str) -> str:
-    normalized = normalize_text(column_name)
-    return BILINGUAL_COLUMN_HINTS.get(normalized, column_name)
-
-
-def get_suggested_sheet_groups(sheet_names: list[str]) -> dict[str, str]:
-    normalized_seen = {}
-    suggestions = {}
-    for sheet_name in sorted(sheet_names):
-        normalized = normalize_text(sheet_name)
-        if normalized and normalized not in normalized_seen:
-            normalized_seen[normalized] = sheet_name
-        suggestions[sheet_name] = normalized_seen.get(normalized, sheet_name)
-    return suggestions
-
-
-def resolve_mapping(mapping_df: pd.DataFrame, source_column: str, target_column: str) -> dict[str, str]:
-    resolved = {}
-    for _, row in mapping_df.iterrows():
-        original = str(row[source_column]).strip()
-        mapped = str(row[target_column]).strip() if pd.notna(row[target_column]) else ""
-        resolved[original] = mapped or original
-    return resolved
-
 
 uploaded_files = st.file_uploader(
     "Upload multiple Excel workbooks", type=["xlsx"], accept_multiple_files=True
 )
 
 if uploaded_files:
-    sheet_data: dict[str, list[pd.DataFrame]] = {}
+    source_sheet_data: dict[str, pd.DataFrame] = {}
+    source_sheet_records = []
+
+    parse_errors = []
 
     for file in uploaded_files:
-        xls = pd.ExcelFile(file, engine="openpyxl")
-        for sheet in xls.sheet_names:
-            sheet_data.setdefault(sheet, [])
-            df = xls.parse(sheet)
-            df["Source_File"] = file.name
-            sheet_data[sheet].append(df)
+        parsed_sheets, parse_error = cached_parse_workbook(file.name, file.getvalue())
+        if parse_error:
+            parse_errors.append(parse_error)
+            continue
 
-    all_sheets = sorted(sheet_data.keys())
+        for sheet, df in parsed_sheets.items():
+            source_key = f"sheet_{len(source_sheet_records)}"
+            source_sheet_data[source_key] = df
+            source_sheet_records.append(
+                {
+                    "source_key": source_key,
+                    "source_file": file.name,
+                    "original_sheet": sheet,
+                }
+            )
 
-    st.subheader("Sheet Matching & Grouping")
+    for parse_error in parse_errors:
+        st.error(parse_error)
+
+    if not source_sheet_data:
+        st.stop()
+
+    all_sheets = sorted({record["original_sheet"] for record in source_sheet_records})
+
+    st.subheader("Worksheet Selection & Grouping")
     st.caption(
-        f"Map source sheet name variations into up to {MAX_COMPILED_SHEETS} compiled output sheets."
+        f"Choose which uploaded worksheets to include, then map them into up to {MAX_COMPILED_SHEETS} compiled output sheets."
     )
 
     suggested_sheet_groups = get_suggested_sheet_groups(all_sheets)
     sheet_mapping_seed = pd.DataFrame(
-        {
-            "Original Sheet": all_sheets,
-            "Compiled Sheet": [suggested_sheet_groups[sheet] for sheet in all_sheets],
-        }
+        [
+            {
+                "Include": True,
+                "Source File": record["source_file"],
+                "Original Sheet": record["original_sheet"],
+                "Compiled Sheet": suggested_sheet_groups[record["original_sheet"]],
+                "Source Key": record["source_key"],
+            }
+            for record in sorted(
+                source_sheet_records,
+                key=lambda record: (
+                    record["source_file"].lower(),
+                    record["original_sheet"].lower(),
+                ),
+            )
+        ]
     )
 
     edited_sheet_mapping = st.data_editor(
         sheet_mapping_seed,
+        column_config={
+            "Include": st.column_config.CheckboxColumn("Include"),
+            "Source File": st.column_config.TextColumn("Source File", disabled=True),
+            "Original Sheet": st.column_config.TextColumn("Original Sheet", disabled=True),
+            "Compiled Sheet": st.column_config.TextColumn("Compiled Sheet", required=True),
+            "Source Key": None,
+        },
+        disabled=["Source File", "Original Sheet"],
         hide_index=True,
         use_container_width=True,
         key="sheet_mapping_editor",
     )
 
+    included_sheet_mapping = edited_sheet_mapping[
+        edited_sheet_mapping["Include"].fillna(False)
+    ]
+
+    if included_sheet_mapping.empty:
+        st.info("Select at least one worksheet to merge.")
+        st.stop()
+
     sheet_group_mapping = resolve_mapping(
-        edited_sheet_mapping, source_column="Original Sheet", target_column="Compiled Sheet"
+        included_sheet_mapping, source_column="Source Key", target_column="Compiled Sheet"
     )
 
     grouped_sheet_data: dict[str, list[pd.DataFrame]] = {}
-    for source_sheet, dfs in sheet_data.items():
-        compiled_sheet = sheet_group_mapping.get(source_sheet, source_sheet)
-        grouped_sheet_data.setdefault(compiled_sheet, []).extend(dfs)
+    for source_key, compiled_sheet in sheet_group_mapping.items():
+        grouped_sheet_data.setdefault(compiled_sheet, []).append(source_sheet_data[source_key])
 
     compiled_sheet_names = [
-        name for name in edited_sheet_mapping["Compiled Sheet"].astype(str).str.strip().tolist() if name
+        name
+        for name in included_sheet_mapping["Compiled Sheet"].astype(str).str.strip().tolist()
+        if name
     ]
     unique_compiled_sheet_names = list(dict.fromkeys(compiled_sheet_names))
+    sheet_name_errors = validate_compiled_sheet_names(
+        included_sheet_mapping["Compiled Sheet"].tolist()
+    )
+
+    for sheet_name_error in sheet_name_errors:
+        st.error(sheet_name_error)
+
+    if sheet_name_errors:
+        st.stop()
 
     if len(unique_compiled_sheet_names) > MAX_COMPILED_SHEETS:
         st.error(
@@ -158,6 +165,13 @@ if uploaded_files:
 
                 edited_mapping = st.data_editor(
                     mapping_seed,
+                    column_config={
+                        "Original Column": st.column_config.TextColumn(
+                            "Original Column", disabled=True
+                        ),
+                        "Match Group": st.column_config.TextColumn("Match Group", required=True),
+                    },
+                    disabled=["Original Column"],
                     hide_index=True,
                     use_container_width=True,
                     key=f"column_mapping_editor_{compiled_sheet}",
@@ -174,20 +188,9 @@ if uploaded_files:
 
         for tab, compiled_sheet in zip(tabs, selected_compiled_sheets):
             with tab:
-                renamed_dfs = []
-                for df in grouped_sheet_data[compiled_sheet]:
-                    rename_map = {
-                        col: compiled_sheet_column_mappings[compiled_sheet].get(col, col)
-                        for col in df.columns
-                        if col != "Source_File"
-                    }
-                    renamed_dfs.append(df.rename(columns=rename_map))
-
-                merged_sheets[compiled_sheet] = pd.concat(
-                    renamed_dfs,
-                    axis=0,
-                    join="outer",
-                    ignore_index=True,
+                merged_sheets[compiled_sheet] = merge_dataframes(
+                    grouped_sheet_data[compiled_sheet],
+                    compiled_sheet_column_mappings[compiled_sheet],
                 )
                 st.write(merged_sheets[compiled_sheet].head(10))
 
@@ -195,7 +198,7 @@ if uploaded_files:
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             for sheet_name, df in merged_sheets.items():
-                df.to_excel(writer, index=False, sheet_name=sheet_name[:31])
+                df.to_excel(writer, index=False, sheet_name=sheet_name[:EXCEL_SHEET_NAME_LIMIT])
         output.seek(0)
 
         st.download_button(
