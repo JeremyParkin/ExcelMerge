@@ -60,6 +60,15 @@ def get_suggested_sheet_groups(sheet_names: list[str]) -> dict[str, str]:
     return suggestions
 
 
+def worksheet_matches_query(source_file: str, sheet_name: str, query: str) -> bool:
+    normalized_query = normalize_text(query)
+    if not normalized_query:
+        return True
+
+    searchable_text = normalize_text(f"{source_file} {sheet_name}")
+    return all(token in searchable_text for token in normalized_query.split())
+
+
 def resolve_mapping(
     mapping_df: pd.DataFrame, source_column: str, target_column: str
 ) -> dict[str, str]:

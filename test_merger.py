@@ -9,6 +9,7 @@ from merger import (
     merge_dataframes,
     parse_workbook,
     validate_compiled_sheet_names,
+    worksheet_matches_query,
 )
 
 
@@ -24,6 +25,11 @@ class MergerTests(unittest.TestCase):
         self.assertEqual(suggestions["Details"], "Details")
         self.assertEqual(suggestions["Resume"], "Resume")
         self.assertEqual(suggestions["Résumé"], "Resume")
+
+    def test_worksheet_query_matches_sheet_or_file_name(self):
+        self.assertTrue(worksheet_matches_query("January.xlsx", "Résumé", "resume"))
+        self.assertTrue(worksheet_matches_query("January.xlsx", "Details", "jan detail"))
+        self.assertFalse(worksheet_matches_query("January.xlsx", "Details", "february"))
 
     def test_validate_sheet_names_allows_grouping_duplicates(self):
         self.assertEqual(validate_compiled_sheet_names(["Articles", "Articles"]), [])

@@ -37,6 +37,8 @@ python3 -m unittest
 - Compiled output sheets are limited to five.
 - Large workbooks can have more than five source worksheets. Use the `Include` checkbox
   to choose only the worksheets you want before merging.
+- Use the worksheet filter to find matching file or sheet names, then select or clear
+  just the visible rows.
 - Excel sheet names cannot contain `: \ / ? * [ ]`.
 - Excel sheet names are limited to 31 characters.
 - When two source columns map to the same output field in one sheet, the app keeps the first non-empty value from left to right.

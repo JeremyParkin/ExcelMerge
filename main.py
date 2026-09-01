@@ -1,3 +1,4 @@
+import hashlib
 import io
 
 import pandas as pd
@@ -12,6 +13,7 @@ from merger import (
     parse_workbook,
     resolve_mapping,
     validate_compiled_sheet_names,
+    worksheet_matches_query,
 )
 
 
@@ -30,14 +32,16 @@ if uploaded_files:
 
     parse_errors = []
 
-    for file in uploaded_files:
-        parsed_sheets, parse_error = cached_parse_workbook(file.name, file.getvalue())
+    for file_index, file in enumerate(uploaded_files):
+        file_bytes = file.getvalue()
+        file_digest = hashlib.sha256(file_bytes).hexdigest()[:12]
+        parsed_sheets, parse_error = cached_parse_workbook(file.name, file_bytes)
         if parse_error:
             parse_errors.append(parse_error)
             continue
 
         for sheet, df in parsed_sheets.items():
-            source_key = f"sheet_{len(source_sheet_records)}"
+            source_key = f"sheet_{file_index}_{file_digest}_{len(source_sheet_records)}"
             source_sheet_data[source_key] = df
             source_sheet_records.append(
                 {
@@ -61,41 +65,111 @@ if uploaded_files:
     )
 
     suggested_sheet_groups = get_suggested_sheet_groups(all_sheets)
-    sheet_mapping_seed = pd.DataFrame(
-        [
-            {
-                "Include": False,
-                "Source File": record["source_file"],
-                "Original Sheet": record["original_sheet"],
-                "Compiled Sheet": suggested_sheet_groups[record["original_sheet"]],
-                "Source Key": record["source_key"],
-            }
-            for record in sorted(
-                source_sheet_records,
-                key=lambda record: (
-                    record["source_file"].lower(),
-                    record["original_sheet"].lower(),
-                ),
-            )
-        ]
+
+    selected_by_source_key = st.session_state.setdefault("selected_by_source_key", {})
+    compiled_sheet_by_source_key = st.session_state.setdefault(
+        "compiled_sheet_by_source_key", {}
+    )
+    active_source_keys = {record["source_key"] for record in source_sheet_records}
+    for source_key in list(selected_by_source_key):
+        if source_key not in active_source_keys:
+            del selected_by_source_key[source_key]
+    for source_key in list(compiled_sheet_by_source_key):
+        if source_key not in active_source_keys:
+            del compiled_sheet_by_source_key[source_key]
+
+    for record in source_sheet_records:
+        selected_by_source_key.setdefault(record["source_key"], False)
+        compiled_sheet_by_source_key.setdefault(
+            record["source_key"], suggested_sheet_groups[record["original_sheet"]]
+        )
+
+    worksheet_query = st.text_input(
+        "Filter worksheets",
+        placeholder="Type a sheet or file name",
+        key="worksheet_filter_query",
+    )
+    visible_source_sheet_records = [
+        record
+        for record in source_sheet_records
+        if worksheet_matches_query(
+            record["source_file"], record["original_sheet"], worksheet_query
+        )
+    ]
+
+    selected_count = sum(
+        1 for record in source_sheet_records if selected_by_source_key[record["source_key"]]
+    )
+    st.caption(
+        f"Showing {len(visible_source_sheet_records)} of {len(source_sheet_records)} worksheets. "
+        f"{selected_count} selected."
     )
 
-    select_all, clear_all = st.columns(2)
+    select_visible, clear_visible, select_all, clear_all = st.columns(4)
+    with select_visible:
+        if st.button("Select visible"):
+            for record in visible_source_sheet_records:
+                selected_by_source_key[record["source_key"]] = True
+            st.session_state["sheet_mapping_editor_revision"] = (
+                st.session_state.get("sheet_mapping_editor_revision", 0) + 1
+            )
+            st.rerun()
+    with clear_visible:
+        if st.button("Clear visible"):
+            for record in visible_source_sheet_records:
+                selected_by_source_key[record["source_key"]] = False
+            st.session_state["sheet_mapping_editor_revision"] = (
+                st.session_state.get("sheet_mapping_editor_revision", 0) + 1
+            )
+            st.rerun()
     with select_all:
-        if st.button("Select all worksheets"):
-            sheet_mapping_seed["Include"] = True
+        if st.button("Select all"):
+            for record in source_sheet_records:
+                selected_by_source_key[record["source_key"]] = True
             st.session_state["sheet_mapping_editor_revision"] = (
                 st.session_state.get("sheet_mapping_editor_revision", 0) + 1
             )
+            st.rerun()
     with clear_all:
-        if st.button("Clear worksheet selections"):
-            sheet_mapping_seed["Include"] = False
+        if st.button("Clear all"):
+            for record in source_sheet_records:
+                selected_by_source_key[record["source_key"]] = False
             st.session_state["sheet_mapping_editor_revision"] = (
                 st.session_state.get("sheet_mapping_editor_revision", 0) + 1
             )
+            st.rerun()
+
+    sheet_mapping_rows = [
+        {
+            "Include": selected_by_source_key[record["source_key"]],
+            "Source File": record["source_file"],
+            "Original Sheet": record["original_sheet"],
+            "Compiled Sheet": compiled_sheet_by_source_key[record["source_key"]],
+            "Source Key": record["source_key"],
+        }
+        for record in sorted(
+            visible_source_sheet_records,
+            key=lambda record: (
+                record["source_file"].lower(),
+                record["original_sheet"].lower(),
+            ),
+        )
+    ]
+    sheet_mapping_seed = pd.DataFrame(
+        sheet_mapping_rows,
+        columns=[
+            "Include",
+            "Source File",
+            "Original Sheet",
+            "Compiled Sheet",
+            "Source Key",
+        ],
+    )
 
     sheet_mapping_editor_key = (
-        f"sheet_mapping_editor_{st.session_state.get('sheet_mapping_editor_revision', 0)}"
+        "sheet_mapping_editor_"
+        f"{worksheet_query}_"
+        f"{st.session_state.get('sheet_mapping_editor_revision', 0)}"
     )
 
     edited_sheet_mapping = st.data_editor(
@@ -113,9 +187,21 @@ if uploaded_files:
         key=sheet_mapping_editor_key,
     )
 
-    included_sheet_mapping = edited_sheet_mapping[
-        edited_sheet_mapping["Include"].fillna(False)
-    ]
+    for _, row in edited_sheet_mapping.iterrows():
+        source_key = row["Source Key"]
+        selected_by_source_key[source_key] = bool(row["Include"])
+        compiled_sheet_by_source_key[source_key] = row["Compiled Sheet"]
+
+    included_sheet_mapping = pd.DataFrame(
+        [
+            {
+                "Source Key": record["source_key"],
+                "Compiled Sheet": compiled_sheet_by_source_key[record["source_key"]],
+            }
+            for record in source_sheet_records
+            if selected_by_source_key[record["source_key"]]
+        ]
+    )
 
     if included_sheet_mapping.empty:
         st.info("Select at least one worksheet to merge.")
