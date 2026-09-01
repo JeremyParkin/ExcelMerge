@@ -64,7 +64,7 @@ if uploaded_files:
     sheet_mapping_seed = pd.DataFrame(
         [
             {
-                "Include": True,
+                "Include": False,
                 "Source File": record["source_file"],
                 "Original Sheet": record["original_sheet"],
                 "Compiled Sheet": suggested_sheet_groups[record["original_sheet"]],
@@ -80,6 +80,24 @@ if uploaded_files:
         ]
     )
 
+    select_all, clear_all = st.columns(2)
+    with select_all:
+        if st.button("Select all worksheets"):
+            sheet_mapping_seed["Include"] = True
+            st.session_state["sheet_mapping_editor_revision"] = (
+                st.session_state.get("sheet_mapping_editor_revision", 0) + 1
+            )
+    with clear_all:
+        if st.button("Clear worksheet selections"):
+            sheet_mapping_seed["Include"] = False
+            st.session_state["sheet_mapping_editor_revision"] = (
+                st.session_state.get("sheet_mapping_editor_revision", 0) + 1
+            )
+
+    sheet_mapping_editor_key = (
+        f"sheet_mapping_editor_{st.session_state.get('sheet_mapping_editor_revision', 0)}"
+    )
+
     edited_sheet_mapping = st.data_editor(
         sheet_mapping_seed,
         column_config={
@@ -92,7 +110,7 @@ if uploaded_files:
         disabled=["Source File", "Original Sheet"],
         hide_index=True,
         use_container_width=True,
-        key="sheet_mapping_editor",
+        key=sheet_mapping_editor_key,
     )
 
     included_sheet_mapping = edited_sheet_mapping[
