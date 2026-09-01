@@ -5,7 +5,8 @@ A small Streamlit app for combining multiple `.xlsx` workbooks into one merged w
 The app:
 
 - Reads every sheet from each uploaded workbook.
-- Lets you group source sheets into compiled output sheets.
+- Lets you choose which uploaded worksheets to include.
+- Lets you group included worksheets into compiled output sheets.
 - Suggests English/French column matches such as `Titre` to `Title`.
 - Lets you edit column mappings before merge.
 - Adds a `Source_File` column so merged rows remain traceable.
@@ -34,6 +35,8 @@ python3 -m unittest
 ## Notes
 
 - Compiled output sheets are limited to five.
+- Large workbooks can have more than five source worksheets. Use the `Include` checkbox
+  to choose only the worksheets you want before merging.
 - Excel sheet names cannot contain `: \ / ? * [ ]`.
 - Excel sheet names are limited to 31 characters.
 - When two source columns map to the same output field in one sheet, the app keeps the first non-empty value from left to right.

@@ -25,7 +25,8 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    sheet_data: dict[str, list[pd.DataFrame]] = {}
+    source_sheet_data: dict[str, pd.DataFrame] = {}
+    source_sheet_records = []
 
     parse_errors = []
 
@@ -36,57 +37,88 @@ if uploaded_files:
             continue
 
         for sheet, df in parsed_sheets.items():
-            sheet_data.setdefault(sheet, [])
-            sheet_data[sheet].append(df)
+            source_key = f"sheet_{len(source_sheet_records)}"
+            source_sheet_data[source_key] = df
+            source_sheet_records.append(
+                {
+                    "source_key": source_key,
+                    "source_file": file.name,
+                    "original_sheet": sheet,
+                }
+            )
 
     for parse_error in parse_errors:
         st.error(parse_error)
 
-    if not sheet_data:
+    if not source_sheet_data:
         st.stop()
 
-    all_sheets = sorted(sheet_data.keys())
+    all_sheets = sorted({record["original_sheet"] for record in source_sheet_records})
 
-    st.subheader("Sheet Matching & Grouping")
+    st.subheader("Worksheet Selection & Grouping")
     st.caption(
-        f"Map source sheet name variations into up to {MAX_COMPILED_SHEETS} compiled output sheets."
+        f"Choose which uploaded worksheets to include, then map them into up to {MAX_COMPILED_SHEETS} compiled output sheets."
     )
 
     suggested_sheet_groups = get_suggested_sheet_groups(all_sheets)
     sheet_mapping_seed = pd.DataFrame(
-        {
-            "Original Sheet": all_sheets,
-            "Compiled Sheet": [suggested_sheet_groups[sheet] for sheet in all_sheets],
-        }
+        [
+            {
+                "Include": True,
+                "Source File": record["source_file"],
+                "Original Sheet": record["original_sheet"],
+                "Compiled Sheet": suggested_sheet_groups[record["original_sheet"]],
+                "Source Key": record["source_key"],
+            }
+            for record in sorted(
+                source_sheet_records,
+                key=lambda record: (
+                    record["source_file"].lower(),
+                    record["original_sheet"].lower(),
+                ),
+            )
+        ]
     )
 
     edited_sheet_mapping = st.data_editor(
         sheet_mapping_seed,
         column_config={
+            "Include": st.column_config.CheckboxColumn("Include"),
+            "Source File": st.column_config.TextColumn("Source File", disabled=True),
             "Original Sheet": st.column_config.TextColumn("Original Sheet", disabled=True),
             "Compiled Sheet": st.column_config.TextColumn("Compiled Sheet", required=True),
+            "Source Key": None,
         },
-        disabled=["Original Sheet"],
+        disabled=["Source File", "Original Sheet"],
         hide_index=True,
         use_container_width=True,
         key="sheet_mapping_editor",
     )
 
+    included_sheet_mapping = edited_sheet_mapping[
+        edited_sheet_mapping["Include"].fillna(False)
+    ]
+
+    if included_sheet_mapping.empty:
+        st.info("Select at least one worksheet to merge.")
+        st.stop()
+
     sheet_group_mapping = resolve_mapping(
-        edited_sheet_mapping, source_column="Original Sheet", target_column="Compiled Sheet"
+        included_sheet_mapping, source_column="Source Key", target_column="Compiled Sheet"
     )
 
     grouped_sheet_data: dict[str, list[pd.DataFrame]] = {}
-    for source_sheet, dfs in sheet_data.items():
-        compiled_sheet = sheet_group_mapping.get(source_sheet, source_sheet)
-        grouped_sheet_data.setdefault(compiled_sheet, []).extend(dfs)
+    for source_key, compiled_sheet in sheet_group_mapping.items():
+        grouped_sheet_data.setdefault(compiled_sheet, []).append(source_sheet_data[source_key])
 
     compiled_sheet_names = [
-        name for name in edited_sheet_mapping["Compiled Sheet"].astype(str).str.strip().tolist() if name
+        name
+        for name in included_sheet_mapping["Compiled Sheet"].astype(str).str.strip().tolist()
+        if name
     ]
     unique_compiled_sheet_names = list(dict.fromkeys(compiled_sheet_names))
     sheet_name_errors = validate_compiled_sheet_names(
-        edited_sheet_mapping["Compiled Sheet"].tolist()
+        included_sheet_mapping["Compiled Sheet"].tolist()
     )
 
     for sheet_name_error in sheet_name_errors:

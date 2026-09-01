@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 .venv/
 .streamlit/
+.idea/
 .DS_Store
 *.xlsx
 !fixtures/**/*.xlsx
