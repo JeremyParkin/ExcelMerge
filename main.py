@@ -13,6 +13,7 @@ from merger import (
     parse_workbook,
     resolve_mapping,
     validate_compiled_sheet_names,
+    column_matches_query,
     worksheet_matches_query,
 )
 
@@ -252,6 +253,8 @@ if uploaded_files:
         )
 
         compiled_sheet_column_mappings: dict[str, dict[str, str]] = {}
+        compiled_sheet_included_columns: dict[str, set[str]] = {}
+        compiled_sheets_without_columns = []
 
         for compiled_sheet in selected_compiled_sheets:
             with st.expander(f"Column mapping for '{compiled_sheet}'", expanded=False):
@@ -260,32 +263,144 @@ if uploaded_files:
                     all_columns.extend([col for col in df.columns if col != "Source_File"])
 
                 unique_columns = sorted(set(all_columns))
+                included_column_key = f"included_columns_{compiled_sheet}"
+                output_column_key = f"output_columns_{compiled_sheet}"
+                included_columns = st.session_state.setdefault(included_column_key, {})
+                output_columns = st.session_state.setdefault(output_column_key, {})
+
+                active_columns = set(unique_columns)
+                for column in list(included_columns):
+                    if column not in active_columns:
+                        del included_columns[column]
+                for column in list(output_columns):
+                    if column not in active_columns:
+                        del output_columns[column]
+
+                for column in unique_columns:
+                    included_columns.setdefault(column, True)
+                    output_columns.setdefault(column, get_suggested_column_group(column))
+
+                column_query = st.text_input(
+                    "Filter columns",
+                    placeholder="Type a source or output column name",
+                    key=f"column_filter_query_{compiled_sheet}",
+                )
+                visible_columns = [
+                    column
+                    for column in unique_columns
+                    if column_matches_query(column, output_columns[column], column_query)
+                ]
+
+                selected_column_count = sum(
+                    1 for column in unique_columns if included_columns[column]
+                )
+                st.caption(
+                    f"Showing {len(visible_columns)} of {len(unique_columns)} columns. "
+                    f"{selected_column_count} included."
+                )
+
+                (
+                    select_visible_columns,
+                    clear_visible_columns,
+                    select_all_columns,
+                    clear_all_columns,
+                ) = st.columns(4)
+                with select_visible_columns:
+                    if st.button("Select visible", key=f"select_visible_columns_{compiled_sheet}"):
+                        for column in visible_columns:
+                            included_columns[column] = True
+                        st.session_state[f"column_mapping_revision_{compiled_sheet}"] = (
+                            st.session_state.get(f"column_mapping_revision_{compiled_sheet}", 0) + 1
+                        )
+                        st.rerun()
+                with clear_visible_columns:
+                    if st.button("Clear visible", key=f"clear_visible_columns_{compiled_sheet}"):
+                        for column in visible_columns:
+                            included_columns[column] = False
+                        st.session_state[f"column_mapping_revision_{compiled_sheet}"] = (
+                            st.session_state.get(f"column_mapping_revision_{compiled_sheet}", 0) + 1
+                        )
+                        st.rerun()
+                with select_all_columns:
+                    if st.button("Select all", key=f"select_all_columns_{compiled_sheet}"):
+                        for column in unique_columns:
+                            included_columns[column] = True
+                        st.session_state[f"column_mapping_revision_{compiled_sheet}"] = (
+                            st.session_state.get(f"column_mapping_revision_{compiled_sheet}", 0) + 1
+                        )
+                        st.rerun()
+                with clear_all_columns:
+                    if st.button("Clear all", key=f"clear_all_columns_{compiled_sheet}"):
+                        for column in unique_columns:
+                            included_columns[column] = False
+                        st.session_state[f"column_mapping_revision_{compiled_sheet}"] = (
+                            st.session_state.get(f"column_mapping_revision_{compiled_sheet}", 0) + 1
+                        )
+                        st.rerun()
+
                 mapping_seed = pd.DataFrame(
-                    {
-                        "Original Column": unique_columns,
-                        "Match Group": [get_suggested_column_group(col) for col in unique_columns],
-                    }
+                    [
+                        {
+                            "Include": included_columns[column],
+                            "Original Column": column,
+                            "Output Column": output_columns[column],
+                        }
+                        for column in visible_columns
+                    ],
+                    columns=["Include", "Original Column", "Output Column"],
                 )
 
                 edited_mapping = st.data_editor(
                     mapping_seed,
                     column_config={
+                        "Include": st.column_config.CheckboxColumn("Include"),
                         "Original Column": st.column_config.TextColumn(
                             "Original Column", disabled=True
                         ),
-                        "Match Group": st.column_config.TextColumn("Match Group", required=True),
+                        "Output Column": st.column_config.TextColumn("Output Column", required=True),
                     },
                     disabled=["Original Column"],
                     hide_index=True,
                     use_container_width=True,
-                    key=f"column_mapping_editor_{compiled_sheet}",
+                    key=(
+                        f"column_mapping_editor_{compiled_sheet}_{column_query}_"
+                        f"{st.session_state.get(f'column_mapping_revision_{compiled_sheet}', 0)}"
+                    ),
                 )
 
-                compiled_sheet_column_mappings[compiled_sheet] = resolve_mapping(
-                    edited_mapping,
-                    source_column="Original Column",
-                    target_column="Match Group",
+                for _, row in edited_mapping.iterrows():
+                    column = row["Original Column"]
+                    included_columns[column] = bool(row["Include"])
+                    output_columns[column] = row["Output Column"]
+
+                included_mapping = pd.DataFrame(
+                    [
+                        {
+                            "Original Column": column,
+                            "Output Column": output_columns[column],
+                        }
+                        for column in unique_columns
+                        if included_columns[column]
+                    ]
                 )
+
+                if included_mapping.empty:
+                    st.info("Select at least one column for this compiled sheet.")
+                    compiled_sheet_column_mappings[compiled_sheet] = {}
+                    compiled_sheet_included_columns[compiled_sheet] = set()
+                    compiled_sheets_without_columns.append(compiled_sheet)
+                else:
+                    compiled_sheet_column_mappings[compiled_sheet] = resolve_mapping(
+                        included_mapping,
+                        source_column="Original Column",
+                        target_column="Output Column",
+                    )
+                    compiled_sheet_included_columns[compiled_sheet] = set(
+                        included_mapping["Original Column"]
+                    )
+
+        if compiled_sheets_without_columns:
+            st.stop()
 
         st.subheader("Merged Sheet Previews")
         tabs = st.tabs(selected_compiled_sheets)
@@ -295,6 +410,7 @@ if uploaded_files:
                 merged_sheets[compiled_sheet] = merge_dataframes(
                     grouped_sheet_data[compiled_sheet],
                     compiled_sheet_column_mappings[compiled_sheet],
+                    compiled_sheet_included_columns[compiled_sheet],
                 )
                 st.write(merged_sheets[compiled_sheet].head(10))
 

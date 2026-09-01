@@ -69,6 +69,15 @@ def worksheet_matches_query(source_file: str, sheet_name: str, query: str) -> bo
     return all(token in searchable_text for token in normalized_query.split())
 
 
+def column_matches_query(column_name: str, output_column: str, query: str) -> bool:
+    normalized_query = normalize_text(query)
+    if not normalized_query:
+        return True
+
+    searchable_text = normalize_text(f"{column_name} {output_column}")
+    return all(token in searchable_text for token in normalized_query.split())
+
+
 def resolve_mapping(
     mapping_df: pd.DataFrame, source_column: str, target_column: str
 ) -> dict[str, str]:
@@ -138,16 +147,25 @@ def coalesce_duplicate_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def merge_dataframes(
-    dataframes: list[pd.DataFrame], column_mapping: dict[str, str]
+    dataframes: list[pd.DataFrame],
+    column_mapping: dict[str, str],
+    included_columns: set[str] | None = None,
 ) -> pd.DataFrame:
     renamed_dfs = []
     for df in dataframes:
+        if included_columns is None:
+            columns_to_keep = list(df.columns)
+        else:
+            columns_to_keep = [
+                col for col in df.columns if col == "Source_File" or col in included_columns
+            ]
+
         rename_map = {
             col: column_mapping.get(col, col)
-            for col in df.columns
+            for col in columns_to_keep
             if col != "Source_File"
         }
-        renamed_dfs.append(coalesce_duplicate_columns(df.rename(columns=rename_map)))
+        renamed_dfs.append(coalesce_duplicate_columns(df[columns_to_keep].rename(columns=rename_map)))
 
     return pd.concat(renamed_dfs, axis=0, join="outer", ignore_index=True)
 

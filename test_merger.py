@@ -4,6 +4,7 @@ import unittest
 import pandas as pd
 
 from merger import (
+    column_matches_query,
     get_suggested_column_group,
     get_suggested_sheet_groups,
     merge_dataframes,
@@ -30,6 +31,11 @@ class MergerTests(unittest.TestCase):
         self.assertTrue(worksheet_matches_query("January.xlsx", "Résumé", "resume"))
         self.assertTrue(worksheet_matches_query("January.xlsx", "Details", "jan detail"))
         self.assertFalse(worksheet_matches_query("January.xlsx", "Details", "february"))
+
+    def test_column_query_matches_original_or_output_name(self):
+        self.assertTrue(column_matches_query("Mots clés", "Keywords", "keywords"))
+        self.assertTrue(column_matches_query("Publication Date", "Date", "pub date"))
+        self.assertFalse(column_matches_query("Author", "Writer", "category"))
 
     def test_validate_sheet_names_allows_grouping_duplicates(self):
         self.assertEqual(validate_compiled_sheet_names(["Articles", "Articles"]), [])
@@ -66,6 +72,20 @@ class MergerTests(unittest.TestCase):
 
         self.assertEqual(list(merged.columns), ["Title", "Source_File"])
         self.assertEqual(merged["Title"].tolist(), ["English", "Francais"])
+
+    def test_merge_dataframes_omits_excluded_columns(self):
+        df = pd.DataFrame(
+            {
+                "Title": ["Example"],
+                "Ignore Me": ["Nope"],
+                "Source_File": ["a.xlsx"],
+            }
+        )
+
+        merged = merge_dataframes([df], {"Title": "Headline"}, {"Title"})
+
+        self.assertEqual(list(merged.columns), ["Headline", "Source_File"])
+        self.assertEqual(merged["Headline"].tolist(), ["Example"])
 
     def test_parse_workbook_reports_invalid_workbook(self):
         parsed_sheets, error = parse_workbook("not-excel.xlsx", b"not really a workbook")

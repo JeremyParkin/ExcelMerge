@@ -8,7 +8,7 @@ The app:
 - Lets you choose which uploaded worksheets to include.
 - Lets you group included worksheets into compiled output sheets.
 - Suggests English/French column matches such as `Titre` to `Title`.
-- Lets you edit column mappings before merge.
+- Lets you filter, include, exclude, and rename columns before merge.
 - Adds a `Source_File` column so merged rows remain traceable.
 - Exports the merged workbook as `merged_workbooks.xlsx`.
 
@@ -39,6 +39,8 @@ python3 -m unittest
   to choose only the worksheets you want before merging.
 - Use the worksheet filter to find matching file or sheet names, then select or clear
   just the visible rows.
+- In each compiled sheet, use the column filter and `Include` checkbox to keep only
+  the columns you need.
 - Excel sheet names cannot contain `: \ / ? * [ ]`.
 - Excel sheet names are limited to 31 characters.
 - When two source columns map to the same output field in one sheet, the app keeps the first non-empty value from left to right.
