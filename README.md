@@ -35,6 +35,8 @@ python3 -m unittest
 ## Notes
 
 - Compiled output sheets are limited to five.
+- Selected worksheets stack into one output sheet by default. Change the compiled
+  sheet name only when you want separate tabs in the downloaded workbook.
 - Large workbooks can have more than five source worksheets. Use the `Include` checkbox
   to choose only the worksheets you want before merging.
 - Use the worksheet filter to find matching file or sheet names, then select or clear
