@@ -6,10 +6,8 @@ import pandas as pd
 from merger import (
     column_matches_query,
     get_suggested_column_group,
-    get_suggested_sheet_groups,
     merge_dataframes,
-    parse_workbook,
-    validate_compiled_sheet_names,
+    parse_uploaded_file,
     worksheet_matches_query,
 )
 
@@ -20,13 +18,6 @@ class MergerTests(unittest.TestCase):
         self.assertEqual(get_suggested_column_group("Mots clés"), "Keywords")
         self.assertEqual(get_suggested_column_group("Custom Field"), "Custom Field")
 
-    def test_suggested_sheet_groups_match_normalized_names(self):
-        suggestions = get_suggested_sheet_groups(["Résumé", "Resume", "Details"])
-
-        self.assertEqual(suggestions["Details"], "Details")
-        self.assertEqual(suggestions["Resume"], "Resume")
-        self.assertEqual(suggestions["Résumé"], "Resume")
-
     def test_worksheet_query_matches_sheet_or_file_name(self):
         self.assertTrue(worksheet_matches_query("January.xlsx", "Résumé", "resume"))
         self.assertTrue(worksheet_matches_query("January.xlsx", "Details", "jan detail"))
@@ -36,28 +27,6 @@ class MergerTests(unittest.TestCase):
         self.assertTrue(column_matches_query("Mots clés", "Keywords", "keywords"))
         self.assertTrue(column_matches_query("Publication Date", "Date", "pub date"))
         self.assertFalse(column_matches_query("Author", "Writer", "category"))
-
-    def test_validate_sheet_names_allows_grouping_duplicates(self):
-        self.assertEqual(validate_compiled_sheet_names(["Articles", "Articles"]), [])
-
-    def test_validate_sheet_names_rejects_blank_invalid_and_truncation_collisions(self):
-        errors = validate_compiled_sheet_names(
-            [
-                "Valid",
-                "",
-                None,
-                pd.NA,
-                "Bad/Name",
-                "This sheet name has a shared prefix one",
-                "This sheet name has a shared prefix two",
-            ]
-        )
-
-        error_text = "\n".join(errors)
-        self.assertEqual(len(errors), 3)
-        self.assertIn("non-empty", error_text)
-        self.assertIn("cannot contain", error_text)
-        self.assertIn("31-character", error_text)
 
     def test_merge_dataframes_coalesces_columns_that_map_to_same_name(self):
         df = pd.DataFrame(
@@ -87,25 +56,38 @@ class MergerTests(unittest.TestCase):
         self.assertEqual(list(merged.columns), ["Headline", "Source_File"])
         self.assertEqual(merged["Headline"].tolist(), ["Example"])
 
-    def test_parse_workbook_reports_invalid_workbook(self):
-        parsed_sheets, error = parse_workbook("not-excel.xlsx", b"not really a workbook")
+    def test_parse_uploaded_file_reports_invalid_excel_file(self):
+        parsed_sheets, error = parse_uploaded_file("not-excel.xlsx", b"not really a workbook")
 
         self.assertEqual(parsed_sheets, {})
         self.assertIsNotNone(error)
         self.assertIn("not-excel.xlsx", error)
 
-    def test_parse_workbook_returns_sheets_with_source_file_column(self):
+    def test_parse_uploaded_file_returns_excel_sheets_with_source_file_column(self):
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             pd.DataFrame({"Title": ["Example"]}).to_excel(
                 writer, index=False, sheet_name="Articles"
             )
 
-        parsed_sheets, error = parse_workbook("sample.xlsx", output.getvalue())
+        parsed_sheets, error = parse_uploaded_file("sample.xlsx", output.getvalue())
 
         self.assertIsNone(error)
         self.assertEqual(list(parsed_sheets), ["Articles"])
         self.assertEqual(parsed_sheets["Articles"]["Source_File"].tolist(), ["sample.xlsx"])
+
+    def test_parse_uploaded_file_returns_csv_as_single_source(self):
+        parsed_sheets, error = parse_uploaded_file(
+            "sample.csv", b"Title,Amount\nJanuary,10\nFebruary,20\n"
+        )
+
+        self.assertIsNone(error)
+        self.assertEqual(list(parsed_sheets), ["sample.csv"])
+        self.assertEqual(parsed_sheets["sample.csv"]["Title"].tolist(), ["January", "February"])
+        self.assertEqual(
+            parsed_sheets["sample.csv"]["Source_File"].tolist(),
+            ["sample.csv", "sample.csv"],
+        )
 
 
 if __name__ == "__main__":

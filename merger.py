@@ -1,15 +1,12 @@
 import io
 import re
 import unicodedata
-from collections import Counter
 
 import pandas as pd
 
 
-MAX_COMPILED_SHEETS = 5
 EXCEL_SHEET_NAME_LIMIT = 31
-INVALID_SHEET_NAME_CHARS = re.compile(r"[:\\/?*\[\]]")
-
+MERGED_SHEET_NAME = "Merged Data"
 BILINGUAL_COLUMN_HINTS = {
     "titre": "Title",
     "title": "Title",
@@ -49,17 +46,6 @@ def get_suggested_column_group(column_name: str) -> str:
     return BILINGUAL_COLUMN_HINTS.get(normalized, column_name)
 
 
-def get_suggested_sheet_groups(sheet_names: list[str]) -> dict[str, str]:
-    normalized_seen = {}
-    suggestions = {}
-    for sheet_name in sorted(sheet_names):
-        normalized = normalize_text(sheet_name)
-        if normalized and normalized not in normalized_seen:
-            normalized_seen[normalized] = sheet_name
-        suggestions[sheet_name] = normalized_seen.get(normalized, sheet_name)
-    return suggestions
-
-
 def worksheet_matches_query(source_file: str, sheet_name: str, query: str) -> bool:
     normalized_query = normalize_text(query)
     if not normalized_query:
@@ -89,42 +75,6 @@ def resolve_mapping(
             continue
         resolved[original] = mapped or original
     return resolved
-
-
-def clean_sheet_name(name: object) -> str:
-    if pd.isna(name):
-        return ""
-    return str(name).strip()
-
-
-def validate_compiled_sheet_names(sheet_names: list[object]) -> list[str]:
-    errors = []
-    stripped_names = [clean_sheet_name(name) for name in sheet_names]
-    clean_names = [name for name in stripped_names if name]
-
-    invalid_names = sorted(name for name in clean_names if INVALID_SHEET_NAME_CHARS.search(name))
-    if invalid_names:
-        errors.append(
-            "Compiled sheet names cannot contain these Excel characters: : \\ / ? * [ ]. "
-            f"Invalid names: {', '.join(invalid_names)}."
-        )
-
-    blank_count = len(stripped_names) - len(clean_names)
-    if blank_count:
-        errors.append("Every source sheet must map to a non-empty compiled sheet name.")
-
-    unique_names = list(dict.fromkeys(clean_names))
-    truncated_names = [name[:EXCEL_SHEET_NAME_LIMIT] for name in unique_names]
-    truncation_collisions = sorted(
-        name for name, count in Counter(truncated_names).items() if count > 1
-    )
-    if truncation_collisions:
-        errors.append(
-            "Some compiled sheet names become duplicates after Excel's 31-character limit. "
-            f"Shorten these names: {', '.join(truncation_collisions)}."
-        )
-
-    return errors
 
 
 def coalesce_duplicate_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -165,15 +115,22 @@ def merge_dataframes(
             for col in columns_to_keep
             if col != "Source_File"
         }
-        renamed_dfs.append(coalesce_duplicate_columns(df[columns_to_keep].rename(columns=rename_map)))
+        renamed_dfs.append(
+            coalesce_duplicate_columns(df[columns_to_keep].rename(columns=rename_map))
+        )
 
     return pd.concat(renamed_dfs, axis=0, join="outer", ignore_index=True)
 
 
-def parse_workbook(
+def parse_uploaded_file(
     file_name: str, file_bytes: bytes
 ) -> tuple[dict[str, pd.DataFrame], str | None]:
     try:
+        if file_name.lower().endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(file_bytes))
+            df["Source_File"] = file_name
+            return {file_name: df}, None
+
         xls = pd.ExcelFile(io.BytesIO(file_bytes), engine="openpyxl")
         parsed_sheets = {}
         for sheet in xls.sheet_names:

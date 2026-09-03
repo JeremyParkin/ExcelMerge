@@ -6,20 +6,17 @@ import streamlit as st
 
 from merger import (
     EXCEL_SHEET_NAME_LIMIT,
-    MAX_COMPILED_SHEETS,
+    MERGED_SHEET_NAME,
     column_matches_query,
     get_suggested_column_group,
     merge_dataframes,
-    parse_workbook,
+    parse_uploaded_file,
     resolve_mapping,
-    validate_compiled_sheet_names,
     worksheet_matches_query,
 )
 
 
-SINGLE_OUTPUT_SHEET_NAME = "Merged Data"
-
-cached_parse_workbook = st.cache_data(show_spinner=False)(parse_workbook)
+cached_parse_uploaded_file = st.cache_data(show_spinner=False)(parse_uploaded_file)
 
 
 def bump_revision(key: str) -> None:
@@ -30,10 +27,12 @@ def read_checkbox_value(value: object) -> bool:
     return bool(value) if pd.notna(value) else False
 
 
-st.title("Multi-Sheet Excel Merger")
+st.title("Excel & CSV Row Stacker")
 
 uploaded_files = st.file_uploader(
-    "Upload multiple Excel workbooks", type=["xlsx"], accept_multiple_files=True
+    "Upload Excel workbooks or CSV files",
+    type=["xlsx", "csv"],
+    accept_multiple_files=True,
 )
 
 if uploaded_files:
@@ -44,7 +43,7 @@ if uploaded_files:
     for file_index, file in enumerate(uploaded_files):
         file_bytes = file.getvalue()
         file_digest = hashlib.sha256(file_bytes).hexdigest()[:12]
-        parsed_sheets, parse_error = cached_parse_workbook(file.name, file_bytes)
+        parsed_sheets, parse_error = cached_parse_uploaded_file(file.name, file_bytes)
         if parse_error:
             parse_errors.append(parse_error)
             continue
@@ -66,31 +65,24 @@ if uploaded_files:
     if not source_sheet_data:
         st.stop()
 
-    st.subheader("Worksheet Selection")
+    st.subheader("Source Selection")
     st.caption(
-        "Choose the worksheets to stack into the downloaded workbook. Matching output names are combined into one tab."
+        "Choose the CSV files or Excel worksheets to stack into one downloaded worksheet."
     )
 
     selected_by_source_key = st.session_state.setdefault("selected_by_source_key", {})
-    compiled_sheet_by_source_key = st.session_state.setdefault(
-        "compiled_sheet_by_source_key", {}
-    )
 
     active_source_keys = {record["source_key"] for record in source_sheet_records}
     for source_key in list(selected_by_source_key):
         if source_key not in active_source_keys:
             del selected_by_source_key[source_key]
-    for source_key in list(compiled_sheet_by_source_key):
-        if source_key not in active_source_keys:
-            del compiled_sheet_by_source_key[source_key]
 
     for record in source_sheet_records:
         source_key = record["source_key"]
         selected_by_source_key.setdefault(source_key, False)
-        compiled_sheet_by_source_key.setdefault(source_key, SINGLE_OUTPUT_SHEET_NAME)
 
     worksheet_query = st.text_input(
-        "Filter worksheets",
+        "Filter sources",
         placeholder="Type a sheet or file name",
         key="worksheet_filter_query",
     )
@@ -108,7 +100,7 @@ if uploaded_files:
         if selected_by_source_key[record["source_key"]]
     )
     st.caption(
-        f"Showing {len(visible_source_sheet_records)} of {len(source_sheet_records)} worksheets. "
+        f"Showing {len(visible_source_sheet_records)} of {len(source_sheet_records)} sources. "
         f"{selected_count} selected."
     )
 
@@ -142,8 +134,7 @@ if uploaded_files:
         {
             "Include": selected_by_source_key[record["source_key"]],
             "Source File": record["source_file"],
-            "Original Sheet": record["original_sheet"],
-            "Output Sheet": compiled_sheet_by_source_key[record["source_key"]],
+            "Sheet": record["original_sheet"],
             "Source Key": record["source_key"],
         }
         for record in sorted(
@@ -159,8 +150,7 @@ if uploaded_files:
         columns=[
             "Include",
             "Source File",
-            "Original Sheet",
-            "Output Sheet",
+            "Sheet",
             "Source Key",
         ],
     )
@@ -176,11 +166,10 @@ if uploaded_files:
         column_config={
             "Include": st.column_config.CheckboxColumn("Include"),
             "Source File": st.column_config.TextColumn("Source File", disabled=True),
-            "Original Sheet": st.column_config.TextColumn("Original Sheet", disabled=True),
-            "Output Sheet": st.column_config.TextColumn("Output Sheet", required=True),
+            "Sheet": st.column_config.TextColumn("Sheet", disabled=True),
             "Source Key": None,
         },
-        disabled=["Source File", "Original Sheet"],
+        disabled=["Source File", "Sheet"],
         hide_index=True,
         use_container_width=True,
         key=sheet_mapping_editor_key,
@@ -189,231 +178,168 @@ if uploaded_files:
     for _, row in edited_sheet_mapping.iterrows():
         source_key = row["Source Key"]
         selected_by_source_key[source_key] = read_checkbox_value(row["Include"])
-        compiled_sheet_by_source_key[source_key] = row["Output Sheet"]
 
-    included_sheet_mapping = pd.DataFrame(
+    included_source_records = [
+        record
+        for record in source_sheet_records
+        if selected_by_source_key[record["source_key"]]
+    ]
+
+    if not included_source_records:
+        st.info("Select at least one source to merge.")
+        st.stop()
+
+    selected_dataframes = [
+        source_sheet_data[record["source_key"]]
+        for record in included_source_records
+    ]
+
+    st.subheader("Column Matching")
+    st.caption(
+        "Choose which columns to keep, and map columns that should be treated as the same field."
+    )
+
+    all_columns = []
+    for df in selected_dataframes:
+        all_columns.extend([col for col in df.columns if col != "Source_File"])
+
+    unique_columns = sorted(set(all_columns))
+    included_columns = st.session_state.setdefault("included_columns", {})
+    output_columns = st.session_state.setdefault("output_columns", {})
+
+    active_columns = set(unique_columns)
+    for column in list(included_columns):
+        if column not in active_columns:
+            del included_columns[column]
+    for column in list(output_columns):
+        if column not in active_columns:
+            del output_columns[column]
+
+    for column in unique_columns:
+        included_columns.setdefault(column, True)
+        output_columns.setdefault(column, get_suggested_column_group(column))
+
+    column_query = st.text_input(
+        "Filter columns",
+        placeholder="Type a source or output column name",
+        key="column_filter_query",
+    )
+    visible_columns = [
+        column
+        for column in unique_columns
+        if column_matches_query(column, output_columns[column], column_query)
+    ]
+
+    selected_column_count = sum(1 for column in unique_columns if included_columns[column])
+    st.caption(
+        f"Showing {len(visible_columns)} of {len(unique_columns)} columns. "
+        f"{selected_column_count} included."
+    )
+
+    select_visible_columns, clear_visible_columns, select_all_columns, clear_all_columns = st.columns(4)
+    with select_visible_columns:
+        if st.button("Select visible", key="select_visible_columns"):
+            for column in visible_columns:
+                included_columns[column] = True
+            bump_revision("column_mapping_revision")
+            st.rerun()
+    with clear_visible_columns:
+        if st.button("Clear visible", key="clear_visible_columns"):
+            for column in visible_columns:
+                included_columns[column] = False
+            bump_revision("column_mapping_revision")
+            st.rerun()
+    with select_all_columns:
+        if st.button("Select all", key="select_all_columns"):
+            for column in unique_columns:
+                included_columns[column] = True
+            bump_revision("column_mapping_revision")
+            st.rerun()
+    with clear_all_columns:
+        if st.button("Clear all", key="clear_all_columns"):
+            for column in unique_columns:
+                included_columns[column] = False
+            bump_revision("column_mapping_revision")
+            st.rerun()
+
+    mapping_seed = pd.DataFrame(
         [
             {
-                "Source Key": record["source_key"],
-                "Output Sheet": compiled_sheet_by_source_key[record["source_key"]],
+                "Include": included_columns[column],
+                "Original Column": column,
+                "Output Column": output_columns[column],
             }
-            for record in source_sheet_records
-            if selected_by_source_key[record["source_key"]]
+            for column in visible_columns
+        ],
+        columns=["Include", "Original Column", "Output Column"],
+    )
+
+    edited_mapping = st.data_editor(
+        mapping_seed,
+        column_config={
+            "Include": st.column_config.CheckboxColumn("Include"),
+            "Original Column": st.column_config.TextColumn(
+                "Original Column", disabled=True
+            ),
+            "Output Column": st.column_config.TextColumn("Output Column", required=True),
+        },
+        disabled=["Original Column"],
+        hide_index=True,
+        use_container_width=True,
+        key=(
+            f"column_mapping_editor_{column_query}_"
+            f"{st.session_state.get('column_mapping_revision', 0)}"
+        ),
+    )
+
+    for _, row in edited_mapping.iterrows():
+        column = row["Original Column"]
+        included_columns[column] = read_checkbox_value(row["Include"])
+        output_columns[column] = row["Output Column"]
+
+    included_mapping = pd.DataFrame(
+        [
+            {
+                "Original Column": column,
+                "Output Column": output_columns[column],
+            }
+            for column in unique_columns
+            if included_columns[column]
         ]
     )
 
-    if included_sheet_mapping.empty:
-        st.info("Select at least one worksheet to merge.")
+    if included_mapping.empty:
+        st.info("Select at least one column to merge.")
         st.stop()
 
-    sheet_group_mapping = resolve_mapping(
-        included_sheet_mapping, source_column="Source Key", target_column="Output Sheet"
+    column_mapping = resolve_mapping(
+        included_mapping,
+        source_column="Original Column",
+        target_column="Output Column",
     )
+    included_column_names = set(included_mapping["Original Column"])
 
-    grouped_sheet_data: dict[str, list[pd.DataFrame]] = {}
-    for source_key, compiled_sheet in sheet_group_mapping.items():
-        grouped_sheet_data.setdefault(compiled_sheet, []).append(source_sheet_data[source_key])
-
-    compiled_sheet_names = [
-        name
-        for name in included_sheet_mapping["Output Sheet"].astype(str).str.strip().tolist()
-        if name
-    ]
-    unique_compiled_sheet_names = list(dict.fromkeys(compiled_sheet_names))
-    sheet_name_errors = validate_compiled_sheet_names(
-        included_sheet_mapping["Output Sheet"].tolist()
+    st.subheader("Merged Preview")
+    merged_sheet = merge_dataframes(
+        selected_dataframes,
+        column_mapping,
+        included_column_names,
     )
+    st.write(merged_sheet.head(10))
 
-    for sheet_name_error in sheet_name_errors:
-        st.error(sheet_name_error)
-
-    if sheet_name_errors:
-        st.stop()
-
-    if len(unique_compiled_sheet_names) > MAX_COMPILED_SHEETS:
-        st.error(
-            f"You created {len(unique_compiled_sheet_names)} output sheets. Please reduce this to {MAX_COMPILED_SHEETS} or fewer."
-        )
-        st.stop()
-
-    selected_compiled_sheets = st.multiselect(
-        "Output sheets to include:",
-        options=unique_compiled_sheet_names,
-        default=unique_compiled_sheet_names,
-    )
-
-    merged_sheets = {}
-
-    if selected_compiled_sheets:
-        st.subheader("Column Matching & Grouping")
-        st.caption(
-            "Choose which columns to keep, and map columns that should be treated as the same field."
-        )
-
-        compiled_sheet_column_mappings: dict[str, dict[str, str]] = {}
-        compiled_sheet_included_columns: dict[str, set[str]] = {}
-        compiled_sheets_without_columns = []
-
-        for compiled_sheet in selected_compiled_sheets:
-            with st.expander(f"Columns for '{compiled_sheet}'", expanded=False):
-                all_columns = []
-                for df in grouped_sheet_data[compiled_sheet]:
-                    all_columns.extend([col for col in df.columns if col != "Source_File"])
-
-                unique_columns = sorted(set(all_columns))
-                included_column_key = f"included_columns_{compiled_sheet}"
-                output_column_key = f"output_columns_{compiled_sheet}"
-                included_columns = st.session_state.setdefault(included_column_key, {})
-                output_columns = st.session_state.setdefault(output_column_key, {})
-
-                active_columns = set(unique_columns)
-                for column in list(included_columns):
-                    if column not in active_columns:
-                        del included_columns[column]
-                for column in list(output_columns):
-                    if column not in active_columns:
-                        del output_columns[column]
-
-                for column in unique_columns:
-                    included_columns.setdefault(column, True)
-                    output_columns.setdefault(column, get_suggested_column_group(column))
-
-                column_query = st.text_input(
-                    "Filter columns",
-                    placeholder="Type a source or output column name",
-                    key=f"column_filter_query_{compiled_sheet}",
-                )
-                visible_columns = [
-                    column
-                    for column in unique_columns
-                    if column_matches_query(column, output_columns[column], column_query)
-                ]
-
-                selected_column_count = sum(
-                    1 for column in unique_columns if included_columns[column]
-                )
-                st.caption(
-                    f"Showing {len(visible_columns)} of {len(unique_columns)} columns. "
-                    f"{selected_column_count} included."
-                )
-
-                (
-                    select_visible_columns,
-                    clear_visible_columns,
-                    select_all_columns,
-                    clear_all_columns,
-                ) = st.columns(4)
-                with select_visible_columns:
-                    if st.button("Select visible", key=f"select_visible_columns_{compiled_sheet}"):
-                        for column in visible_columns:
-                            included_columns[column] = True
-                        bump_revision(f"column_mapping_revision_{compiled_sheet}")
-                        st.rerun()
-                with clear_visible_columns:
-                    if st.button("Clear visible", key=f"clear_visible_columns_{compiled_sheet}"):
-                        for column in visible_columns:
-                            included_columns[column] = False
-                        bump_revision(f"column_mapping_revision_{compiled_sheet}")
-                        st.rerun()
-                with select_all_columns:
-                    if st.button("Select all", key=f"select_all_columns_{compiled_sheet}"):
-                        for column in unique_columns:
-                            included_columns[column] = True
-                        bump_revision(f"column_mapping_revision_{compiled_sheet}")
-                        st.rerun()
-                with clear_all_columns:
-                    if st.button("Clear all", key=f"clear_all_columns_{compiled_sheet}"):
-                        for column in unique_columns:
-                            included_columns[column] = False
-                        bump_revision(f"column_mapping_revision_{compiled_sheet}")
-                        st.rerun()
-
-                mapping_seed = pd.DataFrame(
-                    [
-                        {
-                            "Include": included_columns[column],
-                            "Original Column": column,
-                            "Output Column": output_columns[column],
-                        }
-                        for column in visible_columns
-                    ],
-                    columns=["Include", "Original Column", "Output Column"],
-                )
-
-                edited_mapping = st.data_editor(
-                    mapping_seed,
-                    column_config={
-                        "Include": st.column_config.CheckboxColumn("Include"),
-                        "Original Column": st.column_config.TextColumn(
-                            "Original Column", disabled=True
-                        ),
-                        "Output Column": st.column_config.TextColumn("Output Column", required=True),
-                    },
-                    disabled=["Original Column"],
-                    hide_index=True,
-                    use_container_width=True,
-                    key=(
-                        f"column_mapping_editor_{compiled_sheet}_{column_query}_"
-                        f"{st.session_state.get(f'column_mapping_revision_{compiled_sheet}', 0)}"
-                    ),
-                )
-
-                for _, row in edited_mapping.iterrows():
-                    column = row["Original Column"]
-                    included_columns[column] = read_checkbox_value(row["Include"])
-                    output_columns[column] = row["Output Column"]
-
-                included_mapping = pd.DataFrame(
-                    [
-                        {
-                            "Original Column": column,
-                            "Output Column": output_columns[column],
-                        }
-                        for column in unique_columns
-                        if included_columns[column]
-                    ]
-                )
-
-                if included_mapping.empty:
-                    st.info("Select at least one column for this output sheet.")
-                    compiled_sheet_column_mappings[compiled_sheet] = {}
-                    compiled_sheet_included_columns[compiled_sheet] = set()
-                    compiled_sheets_without_columns.append(compiled_sheet)
-                else:
-                    compiled_sheet_column_mappings[compiled_sheet] = resolve_mapping(
-                        included_mapping,
-                        source_column="Original Column",
-                        target_column="Output Column",
-                    )
-                    compiled_sheet_included_columns[compiled_sheet] = set(
-                        included_mapping["Original Column"]
-                    )
-
-        if compiled_sheets_without_columns:
-            st.stop()
-
-        st.subheader("Merged Sheet Previews")
-        tabs = st.tabs(selected_compiled_sheets)
-
-        for tab, compiled_sheet in zip(tabs, selected_compiled_sheets):
-            with tab:
-                merged_sheets[compiled_sheet] = merge_dataframes(
-                    grouped_sheet_data[compiled_sheet],
-                    compiled_sheet_column_mappings[compiled_sheet],
-                    compiled_sheet_included_columns[compiled_sheet],
-                )
-                st.write(merged_sheets[compiled_sheet].head(10))
-
-    if selected_compiled_sheets and merged_sheets:
+    if not merged_sheet.empty:
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            for sheet_name, df in merged_sheets.items():
-                df.to_excel(writer, index=False, sheet_name=sheet_name[:EXCEL_SHEET_NAME_LIMIT])
+            merged_sheet.to_excel(
+                writer,
+                index=False,
+                sheet_name=MERGED_SHEET_NAME[:EXCEL_SHEET_NAME_LIMIT],
+            )
         output.seek(0)
 
         st.download_button(
             label="Compile & Download Excel File",
             data=output,
-            file_name="merged_workbooks.xlsx",
+            file_name="merged_sources.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
