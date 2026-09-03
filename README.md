@@ -6,7 +6,7 @@ The app:
 
 - Reads every sheet from each uploaded workbook.
 - Lets you choose which uploaded worksheets to include.
-- Lets you group included worksheets into compiled output sheets.
+- Stacks included worksheets into one output sheet by default.
 - Suggests English/French column matches such as `Titre` to `Title`.
 - Lets you filter, include, exclude, and rename columns before merge.
 - Adds a `Source_File` column so merged rows remain traceable.
@@ -34,14 +34,14 @@ python3 -m unittest
 
 ## Notes
 
-- Compiled output sheets are limited to five.
+- Output sheets are limited to five.
 - Selected worksheets stack into one output sheet by default. Change the compiled
   sheet name only when you want separate tabs in the downloaded workbook.
 - Large workbooks can have more than five source worksheets. Use the `Include` checkbox
   to choose only the worksheets you want before merging.
 - Use the worksheet filter to find matching file or sheet names, then select or clear
   just the visible rows.
-- In each compiled sheet, use the column filter and `Include` checkbox to keep only
+- In each output sheet, use the column filter and `Include` checkbox to keep only
   the columns you need.
 - Excel sheet names cannot contain `: \ / ? * [ ]`.
 - Excel sheet names are limited to 31 characters.

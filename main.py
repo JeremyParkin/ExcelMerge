@@ -9,7 +9,6 @@ from merger import (
     MAX_COMPILED_SHEETS,
     column_matches_query,
     get_suggested_column_group,
-    get_suggested_sheet_groups,
     merge_dataframes,
     parse_workbook,
     resolve_mapping,
@@ -67,24 +66,10 @@ if uploaded_files:
     if not source_sheet_data:
         st.stop()
 
-    all_sheets = sorted({record["original_sheet"] for record in source_sheet_records})
-
-    st.subheader("Worksheet Selection & Grouping")
+    st.subheader("Worksheet Selection")
     st.caption(
-        f"Choose which uploaded worksheets to include, then map them into up to {MAX_COMPILED_SHEETS} compiled output sheets."
+        "Choose the worksheets to stack into the downloaded workbook. Matching output names are combined into one tab."
     )
-
-    output_grouping = st.radio(
-        "Default output grouping",
-        options=[
-            "Stack selected worksheets into one output sheet",
-            "Keep matching worksheet names separate",
-        ],
-        horizontal=True,
-        key="output_grouping",
-    )
-
-    suggested_sheet_groups = get_suggested_sheet_groups(all_sheets)
 
     selected_by_source_key = st.session_state.setdefault("selected_by_source_key", {})
     compiled_sheet_by_source_key = st.session_state.setdefault(
@@ -99,21 +84,10 @@ if uploaded_files:
         if source_key not in active_source_keys:
             del compiled_sheet_by_source_key[source_key]
 
-    previous_grouping = st.session_state.get("previous_output_grouping")
-    if previous_grouping != output_grouping:
-        compiled_sheet_by_source_key.clear()
-        st.session_state["previous_output_grouping"] = output_grouping
-        bump_revision("sheet_mapping_editor_revision")
-
     for record in source_sheet_records:
         source_key = record["source_key"]
         selected_by_source_key.setdefault(source_key, False)
-        default_compiled_sheet = (
-            SINGLE_OUTPUT_SHEET_NAME
-            if output_grouping == "Stack selected worksheets into one output sheet"
-            else suggested_sheet_groups[record["original_sheet"]]
-        )
-        compiled_sheet_by_source_key.setdefault(source_key, default_compiled_sheet)
+        compiled_sheet_by_source_key.setdefault(source_key, SINGLE_OUTPUT_SHEET_NAME)
 
     worksheet_query = st.text_input(
         "Filter worksheets",
@@ -169,7 +143,7 @@ if uploaded_files:
             "Include": selected_by_source_key[record["source_key"]],
             "Source File": record["source_file"],
             "Original Sheet": record["original_sheet"],
-            "Compiled Sheet": compiled_sheet_by_source_key[record["source_key"]],
+            "Output Sheet": compiled_sheet_by_source_key[record["source_key"]],
             "Source Key": record["source_key"],
         }
         for record in sorted(
@@ -186,7 +160,7 @@ if uploaded_files:
             "Include",
             "Source File",
             "Original Sheet",
-            "Compiled Sheet",
+            "Output Sheet",
             "Source Key",
         ],
     )
@@ -203,7 +177,7 @@ if uploaded_files:
             "Include": st.column_config.CheckboxColumn("Include"),
             "Source File": st.column_config.TextColumn("Source File", disabled=True),
             "Original Sheet": st.column_config.TextColumn("Original Sheet", disabled=True),
-            "Compiled Sheet": st.column_config.TextColumn("Compiled Sheet", required=True),
+            "Output Sheet": st.column_config.TextColumn("Output Sheet", required=True),
             "Source Key": None,
         },
         disabled=["Source File", "Original Sheet"],
@@ -215,13 +189,13 @@ if uploaded_files:
     for _, row in edited_sheet_mapping.iterrows():
         source_key = row["Source Key"]
         selected_by_source_key[source_key] = read_checkbox_value(row["Include"])
-        compiled_sheet_by_source_key[source_key] = row["Compiled Sheet"]
+        compiled_sheet_by_source_key[source_key] = row["Output Sheet"]
 
     included_sheet_mapping = pd.DataFrame(
         [
             {
                 "Source Key": record["source_key"],
-                "Compiled Sheet": compiled_sheet_by_source_key[record["source_key"]],
+                "Output Sheet": compiled_sheet_by_source_key[record["source_key"]],
             }
             for record in source_sheet_records
             if selected_by_source_key[record["source_key"]]
@@ -233,7 +207,7 @@ if uploaded_files:
         st.stop()
 
     sheet_group_mapping = resolve_mapping(
-        included_sheet_mapping, source_column="Source Key", target_column="Compiled Sheet"
+        included_sheet_mapping, source_column="Source Key", target_column="Output Sheet"
     )
 
     grouped_sheet_data: dict[str, list[pd.DataFrame]] = {}
@@ -242,12 +216,12 @@ if uploaded_files:
 
     compiled_sheet_names = [
         name
-        for name in included_sheet_mapping["Compiled Sheet"].astype(str).str.strip().tolist()
+        for name in included_sheet_mapping["Output Sheet"].astype(str).str.strip().tolist()
         if name
     ]
     unique_compiled_sheet_names = list(dict.fromkeys(compiled_sheet_names))
     sheet_name_errors = validate_compiled_sheet_names(
-        included_sheet_mapping["Compiled Sheet"].tolist()
+        included_sheet_mapping["Output Sheet"].tolist()
     )
 
     for sheet_name_error in sheet_name_errors:
@@ -258,12 +232,12 @@ if uploaded_files:
 
     if len(unique_compiled_sheet_names) > MAX_COMPILED_SHEETS:
         st.error(
-            f"You mapped {len(unique_compiled_sheet_names)} compiled sheets. Please reduce this to {MAX_COMPILED_SHEETS} or fewer."
+            f"You created {len(unique_compiled_sheet_names)} output sheets. Please reduce this to {MAX_COMPILED_SHEETS} or fewer."
         )
         st.stop()
 
     selected_compiled_sheets = st.multiselect(
-        "Select compiled sheets to merge:",
+        "Output sheets to include:",
         options=unique_compiled_sheet_names,
         default=unique_compiled_sheet_names,
     )
@@ -281,7 +255,7 @@ if uploaded_files:
         compiled_sheets_without_columns = []
 
         for compiled_sheet in selected_compiled_sheets:
-            with st.expander(f"Column mapping for '{compiled_sheet}'", expanded=False):
+            with st.expander(f"Columns for '{compiled_sheet}'", expanded=False):
                 all_columns = []
                 for df in grouped_sheet_data[compiled_sheet]:
                     all_columns.extend([col for col in df.columns if col != "Source_File"])
@@ -401,7 +375,7 @@ if uploaded_files:
                 )
 
                 if included_mapping.empty:
-                    st.info("Select at least one column for this compiled sheet.")
+                    st.info("Select at least one column for this output sheet.")
                     compiled_sheet_column_mappings[compiled_sheet] = {}
                     compiled_sheet_included_columns[compiled_sheet] = set()
                     compiled_sheets_without_columns.append(compiled_sheet)
